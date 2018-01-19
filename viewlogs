@@ -1,0 +1,312 @@
+#!/bin/sh
+#: Title        : Viewlogs
+#: Date         : 2018-01-15
+#: Authors      : Written by: "Kybernetes" <correodelkybernetes@gmail.com>
+#: Version      : 1.0.0
+#: Description  : Executable Dash shell script file.
+#:              : Allows user to select and read a log file from a list of allowed directories.
+#: Installation : 01. Deploy script in /usr/local/bin/viewlogs
+#:              : 02. useradd -s /usr/local/bin/viewlogs -C "Vew logs user"
+#:              : 03. For each $path in /var/log/* ($_LGDIRLST)
+#:              :     * chmod -v o+rx "$path"                  # Is this even needed?
+#:              :     * setfacl -R -m u:viewlogs:rx "$path"    # Allow user to browse $path (manage recursively)
+#:              :     * setfacl -R -m d:u:viewlogs:rx "$path"  # New files w/same permissions (default recursively)
+#:              :     * setfacl -m u:viewlogs:x /var/log/      # Allow user to "cd" on parent directories
+#:              :     * setfacl -m u:viewlogs:x /var/
+##
+## -- Configuration globals --------------------------------------------------------------------------------------------
+# Allowed extension colon separated list
+_FTYPELST="log:txt"
+# Allowed-to-read EOL separated directory list
+_LGDIRLST="/var/log/tomcat/apia
+/var/log/tomcat/apia/fiscalia"
+##
+## -- Required for execution -------------------------------------------------------------------------------------------
+type mkfifo >/dev/null || exit 1
+type stty >/dev/null || exit 1
+type whiptail >/dev/null || exit 1
+type less >/dev/null || exit 1
+type file >/dev/null || exit 1
+##
+## -- Globals ----------------------------------------------------------------------------------------------------------
+# Declare the following useful symbols:
+_RPLY=              ## Read reply
+IFS=                ## Clear the IFS in case they a messy one has been exported;
+readonly _SPC=" "   ## Space (readonly uses a word for assignment's LHS);
+readonly _TAB="	"   ## Tab;
+readonly _EOL="
+"                   ## En of line (newline);
+IFS=$_SPC$_TAB$_EOL ## Now reset de IFS as expected
+##
+## -- Auxiliary functions ----------------------------------------------------------------------------------------------
+stdmsg() { #@ DESCRIPTION: Print messages to STDOUT
+           #@ USAGE: stdmsg [ MSG ... ]
+    [ "${1+X}" = X ] && printf "%s\n" "$@"
+}
+errmsg() { #@ DESCRIPTION: Print messages to STDERR prefixed by an error stamp
+           #@ USAGE: stderr [ MSG ... ]
+    stdmsg ${1+"Error! $@"} >&2
+}
+setvar() { #@ DESCRIPTION: Sets $1 variable specified by reference, to $2 value. $1 MUST BE A VALID NAME!
+           #@ USAGE: setvar NAME [ VALUE ]
+           #@        /!\ - WARNING! - /!\ $1 must be a valid name
+    eval "$1=\${2+\"\$2\"}" ## Without the right side backslash, escaped chars won't be part of assignment                     
+}
+getvar() { #@ DESCRIPTION: Gets value of $2 referenced variable and writes it in $1 referenced name. If referenced
+           #@              variable is unset, referenced name will remain unset, and exit status will be 1
+           #@ USAGE: getvar NAMEW NAMER
+           #@        /!\ - WARNING! - /!\ $1 AND $2 must be a valid names
+    eval "[ \"\${$2+X}\" = X ] && $1=\"\${$2}\"" ## Do not set $1 referenced name if $2 is also unset
+}
+_TFFPTH= _TFFID=0 ## Unique temporary fifo path and ID
+_mkTFfo() { #@ DESCRIPTION: Creates unique temporary fifo in /tmp for each invocation during current instance of script
+            #@              storing its full path in _TFFPTH global.
+            #@ USAGE: _mkTFfo
+            #@        DO NOT CALL DIRECTLY, use mkTFfo() wrapper instead.
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local n
+    _TFFPTH=/tmp/${0##*/}.$$.$_TFFID.tmp n=0                       ## Initialize fifo's path and an attempts counter
+    while ! mkfifo $_TFFPTH 1>/dev/null 2>&1 && [ $n -lt 100 ]; do ## Try create while fifo exists, limiting attempts
+        if [ -e $_TFFPTH ]; then                                   ## Fifo already exists in given path?
+            _TFFID=$((_TFFID < 999 ? _TFFID + 1 : 0))              ## Yes, increase global ID (reset if limit reached)
+            _TFFPTH=/tmp/${0##*/}.$$.$_TFFID.tmp                   ##      and set new path for it
+        else                                                       ## No, so asume another problem is present
+            errmsg "Failed to create named pipe"                   ## Display error message accordingly
+            return 1                                               ## Report this to calling environment
+        fi
+        n=$((n + 1))                                               ## Increase attempts counter
+    done                                                           ## Now sure that fifo was created successfully
+    _TFFID=$((_TFFID < 999 ? _TFFID + 1 : 0))                      ## Increase global ID for next invocation
+    if [ $n -gt 100 ]; then                                        ## If above loop finished by attempts limit
+        errmsg "Too many named pipes"                              ## Assume too many fifos in existance
+        return 2                                                   ## Finish w/errors
+    fi
+}
+mkTFfo() { #@ DESCRIPTION: _mkTFfo() Wrapper, that stores unique temporary fifo path in $1 name.
+           #@ USAGE: mkTFfo NAME
+    _mkTFfo || return $?  ## Create temporary fifo storing full path in global or finish accordingly
+    setvar $1 "$_TFFPTH"  ## Now assign global path to referenced name
+}
+##
+## -- Script specific functions ----------------------------------------------------------------------------------------
+_LGDIRS= ## Log dirs array size
+_getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of variables with $_LGDIRLST string, storing its size in 
+                 #@              above global, and each line in an array element. $1 is used as the array base name.
+                 #@ USAGE: _setLgDrsArr ARRAYBASENAME
+                 #@        DO NOT CALL DIRECTLY, use setLgDrsArr() wrapper instead.
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local lgdirlst
+    lgdirlst="$_LGDIRLST" _LGDIRS=0                    ## Initialize local logs dir list and global array size
+    while [ X"$lgdirlst" != X ]; do                    ## While directory string list is not null..
+        if [ -d "${lgdirlst%%[$_EOL]*}" ]; then        ## If line/path from string is an existing directory..
+            setvar $1_$_LGDIRS "${lgdirlst%%[$_EOL]*}" ## Create array entry w/global size as key and path as value
+            _LGDIRS=$((_LGDIRS + 1))                   ## Increase global size
+        fi
+        case $lgdirlst in                              ## Remove last processed line from global directory list
+            *$_EOL*) lgdirlst=${lgdirlst#*$_EOL} ;;    ## If list contains an EOL, remove all up to EOL from front
+            *) lgdirlst= ;;                            ## If list doesn't contain EOL assume end of list reached
+        esac
+    done
+}
+getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of variables with $_LGDIRLST string using _getLgDrsArr().
+                #@              Array size is stored in $1 and $2 is used as the array base name.
+                #@ USAGE: getLgDrsArr NAME ARRAYBASENAME
+    _getLgDrsArr ${2+"$2"}                             ## Create the array using $2 name (if present)
+    eval "$1=\"\$_LGDIRS\""                            ## Assign global array size to referenced name
+}
+_LGFLS= ## Log files array size
+_getLgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables with log files right under $3 directory,
+                 #@              storing each file in an element. Size is stored in global. $1 is used as array's name.
+                 #@ USAGE: _getLgFlsArr ARRAYNAME PATH
+                 #@        DO NOT CALL DIRECTLY, use getLgFlsArr() wrapper instead.
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local fls tffo ftypelst
+    ftypelst="$_FTYPELST" fls=                        ## Initialize local type list and files pattern list
+    while [ X"$ftypelst" != X ]; do                   ## While global file type list is not null..
+        fls=${fls+"$fls "}"\"\$2\"/*."${ftypelst%%:*} ## For each $type apend "$path/*.$type" to files pattern list
+        case $ftypelst in                             ## Remove last processed type from types list
+            *:*) ftypelst=${ftypelst#*:} ;;           ## If list contains a ':', remove all up to ':' from front
+            *) ftypelst= ;;                           ## If it doesn't assume end of list reached
+        esac
+    done
+    if ! mkTFfo tffo; then                            ## Try to create a temporary fifo
+        errmsg "Unable to create a temporary pipe"    ## Or fail accordingly
+        return 1
+    fi
+    _LGFLS=0                                          ##
+    eval "file -i -- $fls" >$tffo &
+    { while IFS= read -r _RPLY; do
+          case $_RPLY in
+              *text*)
+                  setvar $1_$_LGFLS "${_RPLY%:*}"
+                  _LGFLS=$((_LGFLS + 1)) ;;
+          esac
+      done <$tffo; } 2>/dev/null
+    if [ $? -gt 1 ]; then
+        errmsg "Failed to read from named pipe"
+        rm -f $tffo
+        return 2
+    elif ! wait $!; then
+        errmsg "Failed to retrieve log file list"
+        rm -f $tffo
+        return 3
+    fi
+    rm -f $tffo
+}
+getLgFlsArr() { #@ DESCRIPTION:
+                #@ USAGE: getLgFlsArr NAME ARRAYBASENAME PATH
+    _getLgFlsArr ${2+"$2"} ${3+"$3"} || return $?
+    eval "$1=\"\$_LGFLS\""
+}
+unstArr() { #@ DESCRIPTION: Unset an entire array-like list of variables given its basename and size
+            #@ USAGE unsetArr SIZE ARRAYBASENAME
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local i
+    i=0                     ## Initialize array index
+    while [ $i -le $1 ]; do ## While previous index wasn't the last one
+        eval "unset $2_$i"  ## Unset current array element
+        i=$((i + 1))        ## Increase index
+    done
+}
+_TROWS= _TCOLS=
+_getTrmSze() { #@ DESCRIPTION:
+               #@ USAGE: _getTrmSze
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local tffo
+    if ! mkTFfo tffo; then
+        errmsg "Unable to create a temporary pipe"
+        return 1
+    fi
+    stty -a >$tffo 2>/dev/null &
+    { while IFS= read -r _RPLY; do
+          case $_RPLY in
+              *rows*columns*)
+                  _TROWS=${_RPLY#*"rows "}
+                  _TROWS=${_TROWS%%[!0-9]*}
+                  _TCOLS=${_RPLY#*"columns "}
+                  _TCOLS=${_TCOLS%%[!0-9]*}
+                  break ;;
+          esac
+      done <$tffo; } 2>/dev/null
+    if [ $? -gt 1 ]; then
+        errmsg "Failed to read from named pipe"
+        rm -f $tffo
+        return 2
+    elif ! wait $!; then
+        errmsg "Failed to get terminal size"
+        rm -f $tffo
+        return 3
+    fi
+    rm -f $tffo
+}
+getTrmSze() { #@ DESCRIPTION:
+              #@ USAGE: getTrmSze NAME1 NAME2
+    _getTrmSze || return $?
+    setvar $1 "$_TROWS"
+    setvar $2 "$_TCOLS"
+}
+_MSLCTD=
+_menu() { #@ DESCRIPTION:
+          #@ USAGE: _menu TITLE SUGGESTION ARRAYNAME ARRAYSIZE
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local rws cls i tgitms itm
+    rws=0 cls=0
+    if ! getTrmSze rws cls; then
+        errmsg "Unable to get terminal size"
+        return 1
+    fi
+    i=0 tgitms=
+    while [ $i -lt $4 ]; do
+        eval "itm=\"\$$3_$i\""
+        tgitms=${tgitms:+"$tgitms "}"$i \"$itm\""
+        i=$((i + 1))
+    done
+    _MSLCTD=$(eval "whiptail --title \"$1\" --menu \"$2\"\
+                             $((rws - 3)) $((cls - 30)) $((rws - 10))\
+                             $tgitms x Salir 3>&1 >&2 2>&3")
+    case $? in
+        0|1)
+            return $? ;;
+        *) 
+            errmsg "Menu failed"
+            return 2 ;;
+    esac
+}
+menu() { #@ DESCRIPTION:
+         #@ USAGE: menu NAME TITLE SUGGESTION ARRAYNAME ARRAYSIZE
+    _menu ${2+"$2"} ${3+"$3"} ${4+"$4"} ${5+"$5"} || return $?
+    eval "$1=\"$_MSLCTD\""
+}
+viewlog() { #@ DESCRIPTION:
+            #@ USAGE: viewlog PATH
+    LESSSECURE=1 less -R "$1"
+}
+##
+## -- Main -------------------------------------------------------------------------------------------------------------
+main() {
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local errs ldarr lds s_ld s_ldp lfarr lfs s_lf s_lfp
+    set -m -- ## Force job control ON and discard any positional parameters
+    # Check for an interactive shell
+    if [ ! -t 0 ]; then
+        errmsg "Interactive shell required"
+        sleep 2
+        return 1
+    fi
+    # Fetch log-directories-to-select list
+    if ! getLgDrsArr lds ldarr; then
+        stdmsg "Unable to retrieve log directores list"
+        sleep 2
+        return 2
+    fi
+    while :; do
+        # Request user to select a directory from log directories list
+        menu s_ld "Select a log directory" "Directory" ldarr $lds
+        case $? in
+            1) return 0 ;;
+            2)
+                stdmsg "Unable to get answer from user"
+                sleep 2
+                return 3 ;;
+        esac
+        case $s_ld in
+            [Xx]) return 0 ;;
+            *)  # Fetch list of logfiles inside of selected directory
+                getvar s_ldp ldarr_$s_ld
+                if ! getLgFlsArr lfs lfarr "$s_ldp"; then
+                   stdmsg "Unable to retrieve $s_ldp file list"
+                    sleep 2
+                    return 4
+                fi
+                while :; do
+                    # Request user to select a log file to read
+                    menu s_lf "Select a log file" "File" lfarr $lfs
+                    case $? in
+                        1) 
+                            unstArr $lfs lfarr
+                            break ;;
+                        2)
+                            stdmsg "Unable to get answer from user"
+                            sleep 2
+                            return 5 ;;
+                    esac
+                    case $s_lf in
+                        [Xx])
+                            unstArr $lfs lfarr
+                            break ;;
+                              
+                        *)
+                            getvar s_lfp lfarr_$s_lf
+                            if ! viewlog "$s_lfp"; then
+                                stdmsg "Unable to read $s_lfp"
+                                sleep 2
+                                return 6
+                            fi ;;
+                    esac
+                done ;;
+        esac        
+    done    
+}
+##
+## -- Run! -------------------------------------------------------------------------------------------------------------
+main "$@"
