@@ -2,7 +2,7 @@
 #: Title        : Viewlogs
 #: Date         : 2018-01-15
 #: Authors      : Written by: "Kybernetes" <correodelkybernetes@gmail.com>
-#: Version      : 1.0.0
+#: Version      : 1.1.0
 #: Description  : Executable Dash shell script file.
 #:              : Allows user to select and read a log file from a list of allowed directories.
 #: Installation : 01. Deploy script in /usr/local/bin/viewlogs
@@ -20,8 +20,9 @@
 # Allowed extension colon separated list
 _FTYPELST="log:txt"
 # Allowed-to-read EOL separated directory list
-_LGDIRLST="/var/log/tomcat/apia
-/var/log/tomcat/apia/fiscalia"
+_LGDIRLST="/var/log/tomcat/
+/var/log/jboss-as/instance1
+/var/log/jboss-as/instance2"
 ##
 ## -- Required for execution -------------------------------------------------------------------------------------------
 type mkfifo >/dev/null || exit 1   ## Allows temporary fifo creation
@@ -114,13 +115,13 @@ getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of variables with $_L
                 #@              Array size is stored in $1 and $2 is used as the array base name.
                 #@ USAGE: getLgDrsArr NAME ARRAYBASENAME
     _getLgDrsArr ${2+"$2"}                             ## Create the array using $2 name (if present)
-    eval "$1=\"\$_LGDIRS\""                            ## Assign global array size to referenced name
+    setvar $1 $_LGDIRS                                 ## Assign global array size to referenced name
 }
-_LGFLS= ## Log files array size
-_getLgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables with log files right under $3 directory,
-                 #@              storing each file in an element. Size is stored in global. $1 is used as array's name.
-                 #@ USAGE: _getLgFlsArr ARRAYNAME PATH
-                 #@        DO NOT CALL DIRECTLY, use getLgFlsArr() wrapper instead.
+_RGFLS= ## Regular files array size
+_getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/regular files right under $3 dir. storing
+                 #@              each file in an element. Size is stored in global. $1 is used as array's basename.
+                 #@ USAGE: _getRgFlsArr ARRAYNAME PATH
+                 #@        DO NOT CALL DIRECTLY, use getRgFlsArr wrapper instead.
     ## Local variables (If local is used, it should appear as the first statement of a function)
     local fls tffo ftypelst
     ftypelst="$_FTYPELST" fls=                        ## Initialize local type list and files pattern list
@@ -135,32 +136,30 @@ _getLgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables with lo
         errmsg "Unable to create a temporary pipe"    ## Or fail accordingly
         return 1
     fi
-    _LGFLS=0                                          ## Initialize global log files array size
-    eval "file -i -- $fls" >$tffo &                   ## Send path-expanded list of files paths and types to pipe
+    _RGFLS=0                                          ## Initialize global reg files array size
+    eval "printf \"%s\n\" -- $fls" >$tffo &           ## Send path-expanded list of files paths and types to pipe
     { while IFS= read -r _RPLY; do                    ## Read from pipe above file list, line by line
-          case $_RPLY in                              ## Filter each line..
-              *text*)                                 ## If file is of text type..
-                  setvar $1_$_LGFLS "${_RPLY%:*}"     ## Create a new array element with its path
-                  _LGFLS=$((_LGFLS + 1)) ;;           ## Count the newly created element
-          esac
+          if [ -f "$_RPLY" ]; then                    ## If line matches existing reg. file..
+              setvar $1_$_RGFLS "${_RPLY##*/}"        ## Create array element w/it's file name part
+              _RGFLS=$((_RGFLS + 1))                  ## Increase global size
+          fi
       done <$tffo; } 2>/dev/null                      ## IO redir for loop to read from pipe and silence shell errors
     if [ $? -gt 1 ]; then                             ## $?=1 when EOF is reached, $?>1 when unable to open fifo
         errmsg "Failed to read from named pipe"       ## Print error message to STDERR when failed to read from pipe
         rm -f $tffo                                   ## Clean up
         return 2                                      ## And finish w/errors
     elif ! wait $!; then                              ## Check exit status from previously backgrounded (job control)
-        errmsg "Failed to retrieve log file list"     ## Print error message if backgrounded finished w/errors
+        errmsg "Failed to retrieve regular file list" ## Print error message if backgrounded finished w/errors
         rm -f $tffo                                   ## Clean up
         return 3                                      ## And finish w/errors. We cannot trust what we read from pipe
     fi
     rm -f $tffo                                       ## Clean up before finish
 }
-getLgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/log files right under $3 directory, using $2
-                #@              as array's basename, storing each path in an array element. Array size is stored in $1
-                #@              referenced name. This is the wrapper to call when _getLgFlsArr() is needed.
-                #@ USAGE: getLgFlsArr NAME ARRAYBASENAME PATH
-    _getLgFlsArr ${2+"$2"} ${3+"$3"} || return $? ## call _getLgFlsArr() or finish preserving its exit status
-    eval "$1=\"\$_LGFLS\""                        ## Store global log files array size into $1 referenced name
+getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/reg. files right under $3 directory, using $2
+                #@ as array's basename, storing each path in arn array elment. Array size is stored in $1 referenced
+                #@ name. This is the wrapper to call when _getRgFlsArr() is needed.
+    _getRgFlsArr ${2+"$2"} ${3+"$3"} || return $? ## call _getRgFlsArr() or finish preserving its exit status
+    setvar $1 $_RGFLS                             ## Store global reg. files array size into $1 referenced name
 }
 unstArr() { #@ DESCRIPTION: Unset an entire array-like list of variables given its basename and size
             #@ USAGE unsetArr SIZE ARRAYBASENAME
@@ -227,13 +226,13 @@ _menu() { #@ DESCRIPTION: Displays a whiptail option menu using an array-like li
     fi
     i=0 tgitms=                              ## Initialize index and tags for each item in the menu list
     while [ $i -lt $4 ]; do                  ## Get all array elements into an string of indexed tags
-        eval "itm=\"\$$3_$i\""
+        getvar itm $3_$i
         tgitms=${tgitms:+"$tgitms "}"$i \"$itm\""
         i=$((i + 1))
     done                                     ## Now display the menu, and await for user's selection
     _MSLCTD=$(eval "whiptail --title \"$1\" --menu \"$2\"\
-                             $((rws - 3)) $((cls - 30)) $((rws - 10))\
-                             $tgitms x Salir 3>&1 >&2 2>&3")
+                       $((rws - 3)) $((cls - 30)) $((rws - 15))\
+                       $tgitms x Salir 3>&1 >&2 2>&3")
     case $? in                               ## If an option is selected, then whiptail's exit status is 0. Else if
         0|1)                                 ## Cancel button is selected it will return 1.
             return $? ;;                     ##
@@ -246,62 +245,76 @@ menu() { #@ DESCRIPTION: This is the wrapper for _menu(), that you generally wan
          #@              functionality, it stores the selected value in referenced name.
          #@ USAGE: menu NAME TITLE SUGGESTION ARRAYNAME ARRAYSIZE
     _menu ${2+"$2"} ${3+"$3"} ${4+"$4"} ${5+"$5"} || return $?
-    eval "$1=\"$_MSLCTD\""
+    setvar $1 "$_MSLCTD"
+}
+istxtf() { #@ DESCRIPTION: Tests if $1 path is that of a plain/text file using "file" command. If it is, exit status
+           #@ will be 0, otherwise it will be 1. A greater exit status indicates that file itself failed.
+           #@ USAGE: istxtf PATH
+    ## Local variables (If local is used, it should appear as the first statement of a function)
+    local fout
+    fout=$(file -i "$1") || return 2
+    case $fout in
+        *text/plain*) return 0 ;;
+    esac
+    errmsg "$1 is not a plain text file."
+    return 1    
 }
 viewlog() { #@ DESCRIPTION: Allow user to safely browse $1 text file content.
             #@ USAGE: viewlog PATH
-    LESSSECURE=1 less -R "$1"
+    LESSSECURE=1 less "$1"
 }
 ##
 ## -- Main -------------------------------------------------------------------------------------------------------------
 main() {
     ## Local variables (If local is used, it should appear as the first statement of a function)
-    local errs ldarr lds s_ld s_ldp lfarr lfs s_lf s_lfp
+    local ldarr lds s_ld s_ldp lfarr lfs s_lf s_lfp
     set -m -- ## Force job control ON and discard any positional parameters
     # Check for an interactive shell
     if [ ! -t 0 ]; then                      ## If current STDIN does NOT point to a terminal
         errmsg "Interactive shell required"  ## Finish w/errors
-        sleep 2
+        sleep 3
         return 1
     fi
     # Fetch log-directories-to-select array
     if ! getLgDrsArr lds ldarr; then                     ## Try to get array size in lds using ldarr as array base name
         stdmsg "Unable to retrieve log directory list"   ## When fail to do so, Display an error message
-        sleep 2                                          ##                     Allow some time to read the message
+        sleep 3                                          ##                     Allow some time to read the message
         return 2                                         ##                     finish execution w/errors
     fi
     # Script's main loop, keep prompting user to select a directory
     while :; do
         # Request user to select a directory from log directories array
-        menu s_ld "Select a log directory" "Directory" ldarr $lds ## Display a menu using array elements as options
-        case $? in                                                ## Storing selected value in s_ld
-            1) return 0 ;;                                        ## Finish execution on "Cancel"
-            2)                                                    ## Also Finish execution w/errors when menu fails
+        menu s_ld "Directory selection" "Select a log directory:" \
+                  ldarr $lds                             ## Display a menu using array elements as options
+        case $? in                                       ## Storing selected value in s_ld
+            1) return 0 ;;                               ## Finish execution on "Cancel"
+            2)                                           ## Also Finish execution w/errors when menu fails
                 stdmsg "Unable to get answer from user"
-                sleep 2
+                sleep 3
                 return 3 ;;
         esac
         # Take actions according to user selected directory
         case $s_ld in
-            [Xx]) return 0 ;;                                       ## If user selected "X" option, finish execution
-            *)                                                      ## Else..
-                getvar s_ldp ldarr_$s_ld                            ## Get selected array index value as path in s_ldp
-                if ! getLgFlsArr lfs lfarr "$s_ldp"; then           ## Try Fetch array of files in selected dir path
-                   stdmsg "Unable to retrieve $s_ldp file list"     ## If fail to do so, display error and finish exec.
-                    sleep 2
+            [Xx]) return 0 ;;                                   ## If user selected "X" option, finish execution
+            *)                                                  ## Else..
+                getvar s_ldp ldarr_$s_ld                        ## Get selected array index value path in s_ldp
+                if ! getRgFlsArr lfs lfarr "$s_ldp"; then       ## Try Fetch array of files in selected dir path
+                   stdmsg "Unable to retrieve $s_ldp file list" ## If fail to do so, display error and finish exec.
+                    sleep 3
                     return 4
                 fi
                 # Keep prompting user to select a log file from selected directory
                 while :; do
                     # Request user to select a log file to read
-                    menu s_lf "Select a log file" "File" lfarr $lfs ## Display menu using log files array as options
+                    menu s_lf "Logfile selection" "Select a log file:" \
+                              lfarr $lfs                            ## Display menu using log files array as options
                     case $? in                                      ## Sorting selected value in s_lf
                         1)                                          ## Finish current loop on "Cancel" but make sure to
                             unstArr $lfs lfarr                      ## destroy log files array before next iteration.
                             break ;;
                         2)                                          ## Finish execution w/errors when menu fails
                             stdmsg "Unable to get answer from user"
-                            sleep 2
+                            sleep 3
                             return 5 ;;
                     esac
                     # TAke actions according to user selected log file
@@ -310,10 +323,14 @@ main() {
                             unstArr $lfs lfarr                 ## Making sure to destroy current log files array
                             break ;;
                         *)                                     ## Else..
-                            getvar s_lfp lfarr_$s_lf           ## get selected array index value as path in s_lfp
-                            if ! viewlog "$s_lfp"; then        ## Try to browse selected log
+                            getvar s_lfp lfarr_$s_lf           ## get selected array index value name in s_lfp
+                            s_lfp="$s_ldp/$s_lfp"              ## Pre-append container's path
+                            if ! istxtf "$s_lfp"; then
+                                stdmsg "File $s_lfp won't be shown"
+                                sleep 3
+                            elif ! viewlog "$s_lfp"; then      ## Try to browse selected log
                                 stdmsg "Unable to read $s_lfp" ## Or Display error message
-                                sleep 2                        ## Allowing some time to read output
+                                sleep 3                        ## Allowing some time to read output
                             fi ;;
                     esac
                 done ;;
