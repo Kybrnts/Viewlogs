@@ -1,8 +1,8 @@
 #!/bin/sh
 #: Title        : Viewlogs
-#: Date         : 2018-02-05
+#: Date         : 2018-02-08
 #: Authors      : Written by: "Kybernetes" <correodelkybernetes@gmail.com>
-#: Version      : 1.2.0
+#: Version      : 1.2.1
 #: Description  : Executable Dash shell script file.
 #:              : Allows user to select and read a log file from a list of allowed directories.
 #: Installation : 01. Deploy script in /usr/local/bin/viewlogs
@@ -12,7 +12,6 @@
 #:              : 05. setfacl -m u:viewlogs:x /var/log/ # Allow user to "cd" on parent directories
 #:              :     setfacl -m u:viewlogs:x /var/
 #:              : 06. For each $drctry in /var/log/* that we need to browse ($_LGDIRLST)
-#:              :     * chmod -v o+rx "$drctry"                 # Is this even needed?
 #:              :     * setfacl -R -m u:viewlogs:rx "$drctry"   # Allow user to browse $path (manage recursively)
 #:              :     * setfacl -R -m d:u:viewlogs:rx "$drctry" # New files w/same permissions (default recursively)
 ##
@@ -26,6 +25,7 @@ _LGDIRLST="/var/log/tomcat/
 ##
 ## -- Required for execution -------------------------------------------------------------------------------------------
 type mkfifo >/dev/null || exit 1   ## Allows temporary fifo creation
+type ls >/dev/null || exit 1       ## List files
 type stty >/dev/null || exit 1     ## Get current terminal information
 type file >/dev/null || exit 1     ## Get info about files to filter them
 type whiptail >/dev/null || exit 1 ## Display user-friendly dialog boxes
@@ -125,6 +125,7 @@ _getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/regul
                  #@        DO NOT CALL DIRECTLY, use getRgFlsArr wrapper instead.
     ## Local variables (If local is used, it should appear as the first statement of a function)
     local fls tffo ftypelst
+    # Create list of path patterns from global
     ftypelst="$_FTYPELST" fls=                        ## Initialize local type list and files pattern list
     while [ X"$ftypelst" != X ]; do                   ## While local file type list is not null..
         fls=${fls+"$fls "}"\"\$2\"/*."${ftypelst%%:*} ## For each $type append "$path/*.$type" to files pattern list
@@ -133,17 +134,17 @@ _getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/regul
             *) ftypelst= ;;                           ## If it doesn't assume end of list reached
         esac
     done
+    # Create the temporary fifo
     if ! mkTFfo tffo; then                            ## Try to create a temporary fifo
         errmsg "Unable to create a temporary pipe"    ## Or fail accordingly
         return 1
     fi
-    _RGFLS=0                                          ## Initialize global reg files array size
-    eval "printf \"%s\n\" -- $fls" >$tffo &           ## Send path-expanded list of files paths and types to pipe
-    { while IFS= read -r _RPLY; do                    ## Read from pipe above file list, line by line
-          if [ -f "$_RPLY" ]; then                    ## If line matches existing reg. file..
-              setvar $1_$_RGFLS "${_RPLY##*/}"        ## Create array element w/it's file name part
-              _RGFLS=$((_RGFLS + 1))                  ## Increase global size
-          fi
+    # Expand list of path patterns before using ls (avoid ls errors on non-esisting files)
+    eval "printf \"%s\n\" -- $fls" >$tffo &           ## Send pattern-expanded list of files paths and to pipe
+    _RGFLS=0 fls=                                     ## Initialize global files array size and expanded files list
+    { while IFS= read -r _RPLY; do                    ## Read from pipe above paths, line by line
+          [ -f "$_RPLY" ] &&                          ## If line matches a file that is not a directory
+              fls=${fls+"$fls "}"\"$_RPLY\""          ## Append quoted path to expanded files list
       done <$tffo; } 2>/dev/null                      ## IO redir for loop to read from pipe and silence shell errors
     if [ $? -gt 1 ]; then                             ## $?=1 when EOF is reached, $?>1 when unable to open fifo
         errmsg "Failed to read from named pipe"       ## Print error message to STDERR when failed to read from pipe
@@ -154,7 +155,22 @@ _getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/regul
         rm -f $tffo                                   ## Clean up
         return 3                                      ## And finish w/errors. We cannot trust what we read from pipe
     fi
-    rm -f $tffo                                       ## Clean up before finish
+    # Sort list of pattern-expanded list of paths by mtime and then create the array
+    eval "ls -td1 -- $fls" >$tffo &               ## Sorted list of paths by files mtime and send it to pipe
+    { while IFS= read -r _RPLY; do                ## Read from pipe line by line each path
+          setvar $1_$_RGFLS "${_RPLY##*/}"        ## Create array element w/it's file name part
+          _RGFLS=$((_RGFLS + 1))                  ## Increase global size
+      done <$tffo; } 2>/dev/null                  ## Print error message to STDERR when failed to read from pipe
+    if [ $? -gt 1 ]; then                         ## $?=1 when EOF is reached, $?>1 when unable to open fifo
+        errmsg "Failed to read from named pipe"   ## Print error message to STDERR when failed to read from pipe
+        rm -f $tffo                               ## Clean up
+        return 2                                  ## And finish w/errors
+    elif ! wait $!; then                          ## Check exit status from previously backgrounded (job control)
+        errmsg "Failed to sort regular file list" ## Print error message if backgrounded finished w/errors
+        rm -f $tffo                               ## Clean up
+        return 3                                  ## And finish w/errors. We cannot trust what we read from pipe
+    fi
+    rm -f $tffo                                   ## Clean up before finish
 }
 getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/reg. files right under $3 directory, using $2
                 #@ as array's basename, storing each path in arn array elment. Array size is stored in $1 referenced
@@ -393,7 +409,7 @@ main() {
                                             stdmsg "Unable to follow $s_lfp" ## Or fail going back to file selection
                                             sleep 3
                                         fi ;;                              ## Go back to file selection menu in any
-                                esac                                       ## Other case
+                                esac                                       ## other case
                             fi ;;
                     esac
                 done ;;
