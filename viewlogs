@@ -1,8 +1,8 @@
 #!/bin/sh
 #: Title        : Viewlogs
-#: Date         : 2018-02-08
+#: Date         : 2018-02-16
 #: Authors      : Written by: "Kybernetes" <correodelkybernetes@gmail.com>
-#: Version      : 1.2.1
+#: Version      : 1.3.0
 #: Description  : Executable Dash shell script file.
 #:              : Allows user to select and read a log file from a list of allowed directories.
 #: Installation : 01. Deploy script in /usr/local/bin/viewlogs
@@ -25,6 +25,7 @@ _LGDIRLST="/var/log/tomcat/
 ##
 ## -- Required for execution -------------------------------------------------------------------------------------------
 type mkfifo >/dev/null || exit 1   ## Allows temporary fifo creation
+type rm >/dev/null || exit 1       ## Allows fifo removal
 type ls >/dev/null || exit 1       ## List files
 type stty >/dev/null || exit 1     ## Get current terminal information
 type file >/dev/null || exit 1     ## Get info about files to filter them
@@ -119,14 +120,15 @@ getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of variables with $_L
     setvar $1 $_LGDIRS                                 ## Assign global array size to referenced name
 }
 _RGFLS= ## Regular files array size
-_getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/regular files right under $3 dir. storing
-                 #@              each file in an element. Size is stored in global. $1 is used as array's basename.
+_getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/available regular files right under $3 dir
+                 #@              sorted by mtime, storing each file in an element, while size is stored in global. $1 is
+                 #@              used as array's basename.
                  #@ USAGE: _getRgFlsArr ARRAYNAME PATH
                  #@        DO NOT CALL DIRECTLY, use getRgFlsArr wrapper instead.
     ## Local variables (If local is used, it should appear as the first statement of a function)
     local fls tffo ftypelst
     # Create list of path patterns from global
-    ftypelst="$_FTYPELST" fls=                        ## Initialize local type list and files pattern list
+    ftypelst="$_FTYPELST" fls= _RGFLS=0               ## Initialize local type and file pattern lists, and global size
     while [ X"$ftypelst" != X ]; do                   ## While local file type list is not null..
         fls=${fls+"$fls "}"\"\$2\"/*."${ftypelst%%:*} ## For each $type append "$path/*.$type" to files pattern list
         case $ftypelst in                             ## Remove last processed type from types list
@@ -139,42 +141,27 @@ _getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/regul
         errmsg "Unable to create a temporary pipe"    ## Or fail accordingly
         return 1
     fi
-    # Expand list of path patterns before using ls (avoid ls errors on non-esisting files)
-    eval "printf \"%s\n\" -- $fls" >$tffo &           ## Send pattern-expanded list of files paths and to pipe
-    _RGFLS=0 fls=                                     ## Initialize global files array size and expanded files list
-    { while IFS= read -r _RPLY; do                    ## Read from pipe above paths, line by line
-          [ -f "$_RPLY" ] &&                          ## If line matches a file that is not a directory
-              fls=${fls+"$fls "}"\"$_RPLY\""          ## Append quoted path to expanded files list
-      done <$tffo; } 2>/dev/null                      ## IO redir for loop to read from pipe and silence shell errors
-    if [ $? -gt 1 ]; then                             ## $?=1 when EOF is reached, $?>1 when unable to open fifo
-        errmsg "Failed to read from named pipe"       ## Print error message to STDERR when failed to read from pipe
-        rm -f $tffo                                   ## Clean up
-        return 2                                      ## And finish w/errors
-    elif ! wait $!; then                              ## Check exit status from previously backgrounded (job control)
-        errmsg "Failed to retrieve regular file list" ## Print error message if backgrounded finished w/errors
-        rm -f $tffo                                   ## Clean up
-        return 3                                      ## And finish w/errors. We cannot trust what we read from pipe
+    # Expand list of path patterns before sorting by mtime w/ls, discarding any ls error messages
+    # We won't care if ls fails due limited access, or non-existing regular files, just allow to list what it's able to
+    eval "ls -td1 -- $fls" >$tffo 2>/dev/null & ## Sort list paths by mtime and send it to pipe
+    { while IFS= read -r _RPLY; do              ## Read from pipe line by line each path
+          if [ -f "$_RPLY" ]; then
+              setvar $1_$_RGFLS "${_RPLY##*/}"  ## Create array element w/it's file name part
+              _RGFLS=$((_RGFLS + 1))            ## Increase global size
+          fi
+      done <$tffo; } 2>/dev/null                ## Loop prints error message to STDERR when failed to read from pipe
+    if [ $? -gt 1 ]; then                       ## $?=1 when EOF is reached, $?>1 when unable to open fifo
+        errmsg "Failed to read from named pipe" ## Print error message to STDERR when failed to read from pipe
+        rm -f $tffo                             ## Clean up before finishing
+        return 2                                ## And finish w/errors
     fi
-    # Sort list of pattern-expanded list of paths by mtime and then create the array
-    eval "ls -td1 -- $fls" >$tffo &               ## Sorted list of paths by files mtime and send it to pipe
-    { while IFS= read -r _RPLY; do                ## Read from pipe line by line each path
-          setvar $1_$_RGFLS "${_RPLY##*/}"        ## Create array element w/it's file name part
-          _RGFLS=$((_RGFLS + 1))                  ## Increase global size
-      done <$tffo; } 2>/dev/null                  ## Print error message to STDERR when failed to read from pipe
-    if [ $? -gt 1 ]; then                         ## $?=1 when EOF is reached, $?>1 when unable to open fifo
-        errmsg "Failed to read from named pipe"   ## Print error message to STDERR when failed to read from pipe
-        rm -f $tffo                               ## Clean up
-        return 2                                  ## And finish w/errors
-    elif ! wait $!; then                          ## Check exit status from previously backgrounded (job control)
-        errmsg "Failed to sort regular file list" ## Print error message if backgrounded finished w/errors
-        rm -f $tffo                               ## Clean up
-        return 3                                  ## And finish w/errors. We cannot trust what we read from pipe
-    fi
-    rm -f $tffo                                   ## Clean up before finish
+    wait $!                                     ## Wait until backgrounded finishes
+    rm -f $tffo                                 ## Clean up before finishing
 }
 getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/reg. files right under $3 directory, using $2
-                #@ as array's basename, storing each path in arn array elment. Array size is stored in $1 referenced
-                #@ name. This is the wrapper to call when _getRgFlsArr() is needed.
+                #@              as array's basename, storing each path in arn array elment. Array size is stored in $1 referenced
+                #@              name. This is the wrapper to call when _getRgFlsArr() is needed.
+                #@ USAGE: getRgFlsArr SIZE ARRAYNAME PATH
     _getRgFlsArr ${2+"$2"} ${3+"$3"} || return $? ## call _getRgFlsArr() or finish preserving its exit status
     setvar $1 $_RGFLS                             ## Store global reg. files array size into $1 referenced name
 }
@@ -247,8 +234,8 @@ _menu() { #@ DESCRIPTION: Displays a whiptail option menu using an array-like li
         tgitms=${tgitms:+"$tgitms "}"$i \"$itm\""
         i=$((i + 1))
     done                                     ## Now display the menu, and await for user's selection
-    _MSLCTD=$(eval "whiptail --notags --title \"$1\" --menu \"$2\"\
-                             --ok-button \"${5:-OK}\" --cancel-button \"${6:-Cancel}\"\
+    _MSLCTD=$(eval "whiptail --fb --notags --title \"$1\" --menu \"$2\"\
+                             --ok-button \"${5:-OK}\" --cancel-button \"${6:-Cancel}\" --\
                              $((rws < 3 ? rws : rws - 3)) $((cls < 30 ? cls : cls - 30))\
                              $((rws < 15 ? rws : rws - 15)) $tgitms x \"${6:-Cancel}\" 3>&1 >&2 2>&3")
     case $? in                               ## If an option is selected, then whiptail's exit status is 0. Else if
@@ -277,8 +264,8 @@ _radio() { #@ DESCRIPTION: Displays a whiptail radio list that allows user to se
         errmsg "Unable to get terminal size" ## Or finish w/errors
         return 1
     fi                                       ## Now display the radio list awaiting for user to choose
-    _RSLCTD=$(whiptail --notags --title "Action select" --radiolist "Select action for $1:"\
-                       --ok-button OK --cancel-button Back\
+    _RSLCTD=$(whiptail --fb --notags --title "Action select" --radiolist "Select action for $1:"\
+                       --ok-button OK --cancel-button Back --\
                        $((rws < 20 ? rws : 20)) $((cls < 60 ? cls : 60)) $((rws < 4 ? rws : 4))\
                        1 "View   - less secure " on\
                        2 "Follow - tail -F (rotation aware) " off\
@@ -356,13 +343,17 @@ main() {
         esac
         # Take actions according to user selected directory
         case $s_ld in
-            [Xx]) return 0 ;;                                   ## If user selected "X" option, finish execution
-            *)                                                  ## Else..
-                getvar s_ldp ldarr_$s_ld                        ## Get selected array index value path in s_ldp
-                if ! getRgFlsArr lfs lfarr "$s_ldp"; then       ## Try Fetch array of files in selected dir path
-                   stdmsg "Unable to retrieve $s_ldp file list" ## If fail to do so, display error and finish exec.
+            [Xx]) return 0 ;;                                    ## If user selected "X" option, finish execution
+            *)                                                   ## Else..
+                getvar s_ldp ldarr_$s_ld                         ## Get selected array index value path in s_ldp
+                if ! getRgFlsArr lfs lfarr "$s_ldp"; then        ## Try Fetch array of files in selected dir path
+                    stdmsg "Unable to retrieve $s_ldp file list" ## If fail to do so, display error and finish exec.
                     sleep 3
                     return 4
+                elif [ $lfs -eq 0 ]; then                        ## Check if there are any files available
+                    stdmsg "No files available under $s_ldp"     ## If there aren't, let the user know in a message
+                    sleep 3                                      ## Allow user to read message
+                    continue                                     ## Go back to directory selection menu
                 fi
                 # Keep prompting user to select a log file from selected directory
                 while :; do
