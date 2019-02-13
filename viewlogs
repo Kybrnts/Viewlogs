@@ -1,21 +1,23 @@
 #!/bin/sh
 #: Title        : Viewlogs
-#: Date         : 2018-02-16
+#: Date         : 2019-02-12
 #: Authors      : Written by: "Kybernetes" <correodelkybernetes@gmail.com>
-#: Version      : 1.3.0
+#: Version      : 1.4.0
 #: Description  : Executable Dash shell script file.
-#:              : Allows user to select and read a log file from a list of allowed directories.
+#:              : Allows user to select and read a log file from a list of allo-
+#:              : wed directories.
 #: Installation : 01. Deploy script in /usr/local/bin/viewlogs
 #:              : 02. chown -v root:root /usr/local/bin/viewlogs
 #:              : 03. chmod -v 755 /usr/local/bin/viewlogs
-#:              : 04. useradd -M -s /usr/local/bin/viewlogs -c "Vew logs user" viewlogs
-#:              : 05. setfacl -m u:viewlogs:x /var/log/ # Allow user to "cd" on parent directories
+#:              : 04. useradd -M -s /usr/local/bin/viewlogs \
+#:              :                -c "Vew logs user" viewlogs
+#:              : 05. setfacl -m u:viewlogs:x /var/log/         # Allow to cd
 #:              :     setfacl -m u:viewlogs:x /var/
-#:              : 06. For each $drctry in /var/log/* that we need to browse ($_LGDIRLST)
-#:              :     * setfacl -R -m u:viewlogs:rx "$drctry"   # Allow user to browse $path (manage recursively)
-#:              :     * setfacl -R -m d:u:viewlogs:rx "$drctry" # New files w/same permissions (default recursively)
+#:              : 06. For each $drctry in /var/log/* that we need to browse
+#:              :     * setfacl -R -m u:viewlogs:rx "$drctry"   # Allow browse
+#:              :     * setfacl -R -m d:u:viewlogs:rx "$drctry" # New files also
 ##
-## -- Configuration globals --------------------------------------------------------------------------------------------
+## -- Run time configuration ---------------------------------------------------
 # Allowed extension colon separated list
 _FTYPELST="log:txt"
 # Allowed-to-read EOL separated directory list
@@ -23,17 +25,37 @@ _LGDIRLST="/var/log/tomcat/
 /var/log/jboss-as/instance1
 /var/log/jboss-as/instance2"
 ##
-## -- Required for execution -------------------------------------------------------------------------------------------
-type mkfifo >/dev/null || exit 1   ## Allows temporary fifo creation
-type rm >/dev/null || exit 1       ## Allows fifo removal
-type ls >/dev/null || exit 1       ## List files
-type stty >/dev/null || exit 1     ## Get current terminal information
-type file >/dev/null || exit 1     ## Get info about files to filter them
-type whiptail >/dev/null || exit 1 ## Display user-friendly dialog boxes
-type less >/dev/null || exit 1     ## Allow user to browse a given file's content
-type tail >/dev/null || exit 1     ## Allow user to follow a text file
+## -- Required for execution ---------------------------------------------------
+_CMD_FILE=/usr/bin/file _CMD_LESS=/usr/bin/less _CMD_LS=/usr/bin/ls
+_CMD_MKFIFO=/usr/bin/mkfifo _CMD_RM=/usr/bin/rm _CMD_SLEEP=/usr/bin/sleep
+_CMD_STTY=/usr/bin/stty _CMD_TAIL=/usr/bin/tail _CMD_WHIPTAIL=/usr/bin/whiptail
+# Check required executables availability before starting
+[ -x "$_CMD_FILE" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_FILE"; exit 1; }
+[ -x "$_CMD_LESS" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_LESS"; exit 1; }
+[ -x "$_CMD_LS" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_LS"; exit 1; }
+[ -x "$_CMD_MKFIFO" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_MKFIFO"; exit 1; }
+[ -x "$_CMD_RM" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_RM"; exit 1; }
+[ -x "$_CMD_SLEEP" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_SLEEP"; exit 1; }
+[ -x "$_CMD_STTY" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_STTY"; exit 1; }
+[ -x "$_CMD_TAIL" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_TAIL"; exit 1; }
+[ -x "$_CMD_WHIPTAIL" ] ||
+    { printf "${0##*/}: %s not found\n" "$_CMD_WHIPTAIL"; exit 1; }
+# Create alias to force use specific path within functions, while keeping syntax
+# short. It will expand on func. declaration NOT on invocation. But DON'T put it
+# inside "if" or any other construct command list: it could render it useless!!
+alias file="$_CMD_FILE" less="$_CMD_LESS" ls="$_CMD_LS" mkfifo="$_CMD_MKFIFO"\
+      rm="$_CMD_RM" sleep="$_CMD_SLEEP" stty="$_CMD_STTY" tail="$_CMD_TAIL" \
+      whiptail="$_CMD_WHIPTAIL"
 ##
-## -- Globals ----------------------------------------------------------------------------------------------------------
+## -- Globals ------------------------------------------------------------------
 # Declare the following useful symbols:
 _RPLY=              ## Read reply
 IFS=                ## Clear the IFS in case they a messy one has been exported;
@@ -43,7 +65,7 @@ readonly _EOL="
 "                   ## En of line (newline);
 IFS=$_SPC$_TAB$_EOL ## Now reset de IFS as expected
 ##
-## -- Auxiliary functions ----------------------------------------------------------------------------------------------
+## -- Auxiliary functions ------------------------------------------------------
 stdmsg() { #@ DESCRIPTION: Print messages to STDOUT
            #@ USAGE: stdmsg [ MSG ... ]
     [ "${1+X}" = X ] && printf "%s\n" "$@"
@@ -52,122 +74,168 @@ errmsg() { #@ DESCRIPTION: Print messages to STDERR prefixed by an error stamp
            #@ USAGE: stderr [ MSG ... ]
     stdmsg ${1+"Error! $@"} >&2
 }
-setvar() { #@ DESCRIPTION: Sets $1 variable specified by reference, to $2 value. $1 MUST BE A VALID NAME!
+setvar() { #@ DESCRIPTION: Sets $1 variable specified by reference, to $2 value.
+           #@ $1 MUST BE A VALID NAME!
            #@ USAGE: setvar NAME [ VALUE ]
            #@        /!\ - WARNING! - /!\ $1 must be a valid name
-    eval "$1=\${2+\"\$2\"}" ## Without the right side backslash, escaped chars won't be part of assignment
+    eval "$1=\${2+\"\$2\"}" ## Without the right side backslash, escaped chars
+                            ## won't be part of assignment
 }
-getvar() { #@ DESCRIPTION: Gets value of $2 referenced variable and writes it in $1 referenced name. If referenced
-           #@              variable is unset, referenced name will remain unset, and exit status will be 1
+getvar() { #@ DESCRIPTION: Stores value of $2 referenced var in $1 name. If $2
+           #@              referenced var. is unset, so $1 name will remain and
+           #@              exit status will be 1.
            #@ USAGE: getvar NAMEW NAMER
            #@        /!\ - WARNING! - /!\ $1 AND $2 must be a valid names
-    eval "[ \"\${$2+X}\" = X ] && $1=\"\${$2}\"" ## Do not set $1 referenced name if $2 is also unset
+    eval "[ \"\${$2+X}\" = X ] && $1=\"\${$2}\"" ## Do not set $1 referenced
+                                                 ## name if $2 is also unset
 }
-_TFFPTH= _TFFID=0 ## Unique temporary fifo path and ID
-_mkTFfo() { #@ DESCRIPTION: Creates unique temporary fifo in /tmp for each invocation during current instance of script
-            #@              storing its full path in _TFFPTH global.
-            #@ USAGE: _mkTFfo
-            #@        DO NOT CALL DIRECTLY, use mkTFfo() wrapper instead.
-    ## Local variables (If local is used, it should appear as the first statement of a function)
-    local n
-    _TFFPTH=/tmp/${0##*/}.$$.$_TFFID.tmp n=0                       ## Initialize fifo's path and an attempts counter
-    while ! mkfifo $_TFFPTH 1>/dev/null 2>&1 && [ $n -lt 100 ]; do ## Try create while fifo exists, limiting attempts
-        if [ -e $_TFFPTH ]; then                                   ## Fifo already exists in given path?
-            _TFFID=$((_TFFID < 999 ? _TFFID + 1 : 0))              ## Yes, increase global ID (reset if limit reached)
-            _TFFPTH=/tmp/${0##*/}.$$.$_TFFID.tmp                   ##      and set new path for it
-        else                                                       ## No, so assume another problem is present
-            errmsg "Failed to create named pipe"                   ## Display error message accordingly
-            return 1                                               ## Report this to calling environment
-        fi
-        n=$((n + 1))                                               ## Increase attempts counter
-    done                                                           ## Now sure that fifo was created successfully
-    _TFFID=$((_TFFID < 999 ? _TFFID + 1 : 0))                      ## Increase global ID for next invocation
-    if [ $n -gt 100 ]; then                                        ## If above loop finished by attempts limit
-        errmsg "Too many named pipes"                              ## Assume too many fifos in existence
-        return 2                                                   ## Finish w/errors
-    fi
+_TMPFFID=0  ## Unique incremental temporary fifo ID
+_mkTFfo() { #@ DESCRIPTION: Creates single temp fifo in /tmp for each invocation
+            #@              during current instance of script updating unique
+            #@              global ID and storing full path in $1 name. Fifo's
+            #@              permission bits may be set to $2 value.
+            #@ USAGE: _mkTFfo NAME [ MODE ]
+            #@        /!\ - WARNINGS: - /!\
+            #@        * $1 must be a valid name
+            #@        * DO NOT CALL DIRECTLY, use mkTFfo() wrapper instead.
+    # Local variables ("local" must be function's first statement)
+    local n tffp
+    # Initialize fifo's path and an attempts counter
+    tffp=/tmp/${0##*/}.$$.$_TMPFFID.tmp n=0
+    # While path used, change path and try create fifo again, limiting attempts.
+    # Use mode if present, nullify mkfifo's output and limit execution time.
+    while ! mkfifo ${2+-m "$2"} "$tffp" 1>/dev/null 2>&1; do
+        if [ ! -e "$tffp" ]; then                ## failed but no fifo there?
+            errmsg "Failed to create named pipe" ## * Display error msg
+            return 1                             ## * Report to calling env.
+        fi                                       ## Failed due to existing ffo?
+        stmpwrn "Existing named pipe $tffp"      ## Displsy warning
+        if [ $((n=n+1)) -gt 50 ]; then           ## Increase attempts counter
+            errmsg "Too many named pipes."       ## Attempts above limit?
+            stdmsg "Will NOT try again."         ## * Display error
+            return 2                             ## * Report to calling env.
+        fi                                       ## Attempts below limit, so
+        stdmsg "Trying again.."                  ## try again.
+        _TMPFFID=$((_TMPFFID < 999 ? _TMPFFID + 1 : 0)) ## Increase global ID
+        tffp=/tmp/${0##*/}.$$.$_TMPFFID.tmp             ## Change path
+    done                                            ## Fifo created!
+    stdmsg "Done."                                  ## Display that
+    _TMPFFID=$((_TMPFFID < 999 ? _TMPFFID + 1 : 0)) ## Increase ID (now used)
+    setvar $1 "$tffp"                               ## Write path to output name
 }
-mkTFfo() { #@ DESCRIPTION: _mkTFfo() Wrapper, that stores unique temporary fifo path in $1 name.
-           #@ USAGE: mkTFfo NAME
-    _mkTFfo || return $?  ## Create temporary fifo storing full path in global or finish accordingly
-    setvar $1 "$_TFFPTH"  ## Now assign global path to referenced name
+mkTFfo() { #@ DESCRIPTION: Creates single temp fifo in /tmp using _mkTFfo()
+           #@ USAGE: mkTFfo NAME [ MODE ]
+    # Local variables ("local" must be function's first statement)
+    local _$1                          ## Create tmp storage for wrapped output
+    _mkTFfo _$1 ${2+"$2"} || return    ## call wrapped or end preserving status
+    getvar $1 _$1                      ## Set referenced name w/wrapped output
 }
 ##
-## -- Script specific functions ----------------------------------------------------------------------------------------
-_LGDIRS= ## Log dirs array size
-_getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of variables with $_LGDIRLST string, storing its size in 
-                 #@              above global, and each line in an array element. $1 is used as the array base name.
+## -- Script specific functions ------------------------------------------------
+_LGDIRS=         #@ Log dirs array size
+_getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of vars w/$_LGDIRLST
+                 #@              string, storing its size in above global, and
+                 #@              each line in an array element. $1 is used as
+                 #@              the array base name.
                  #@ USAGE: _setLgDrsArr ARRAYBASENAME
-                 #@        DO NOT CALL DIRECTLY, use setLgDrsArr() wrapper instead.
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+                 #@        DO NOT CALL DIRECTLY, use below wrapper instead.
+    # Local variables ("local" must be function's first statement)
     local lgdirlst
-    lgdirlst="$_LGDIRLST" _LGDIRS=0                    ## Initialize local logs dir list and global array size
-    while [ X"$lgdirlst" != X ]; do                    ## While directory string list is not null..
-        if [ -d "${lgdirlst%%[$_EOL]*}" ]; then        ## If line/path from string is an existing directory..
-            setvar $1_$_LGDIRS "${lgdirlst%%[$_EOL]*}" ## Create array entry w/global size as key and path as value
-            _LGDIRS=$((_LGDIRS + 1))                   ## Increase global size
+    # Initialize local logs dir list and global array size
+    lgdirlst="$_LGDIRLST" _LGDIRS=0
+    # While directory string list is not null..
+    while [ X"$lgdirlst" != X ]; do
+        # If line/path from string is an existing directory..
+        if [ -d "${lgdirlst%%[$_EOL]*}" ]; then
+            # Create array entry w/global size as key and path as value
+            setvar $1_$_LGDIRS "${lgdirlst%%[$_EOL]*}"
+            # Increase global size
+            _LGDIRS=$((_LGDIRS + 1))
         fi
-        case $lgdirlst in                              ## Remove last processed line from global directory list
-            *$_EOL*) lgdirlst=${lgdirlst#*$_EOL} ;;    ## If list contains an EOL, remove all up to EOL from front
-            *) lgdirlst= ;;                            ## If list doesn't contain EOL assume end of list reached
+        # Remove last processed line from global directory list
+        case $lgdirlst in
+            # If list contains an EOL, remove all up to EOL from front
+            *$_EOL*) lgdirlst=${lgdirlst#*$_EOL} ;;
+            # If list doesn't contain EOL assume end of list reached
+            *) lgdirlst= ;;
         esac
     done
 }
-getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of variables with $_LGDIRLST string using _getLgDrsArr().
-                #@              Array size is stored in $1 and $2 is used as the array base name.
+getLgDrsArr() { #@ DESCRIPTION: Creates an array-like list of vars w/$_LGDIRLST
+                #@              string using _getLgDrsArr(). Array size is sto-
+                #@              red in $1 and $2 is used as the array base name.
                 #@ USAGE: getLgDrsArr NAME ARRAYBASENAME
-    _getLgDrsArr ${2+"$2"}                             ## Create the array using $2 name (if present)
-    setvar $1 $_LGDIRS                                 ## Assign global array size to referenced name
+    _getLgDrsArr ${2+"$2"} ## Create the array using $2 name (if present)
+    setvar $1 $_LGDIRS     ## Assign global array size to referenced name
 }
-_RGFLS= ## Regular files array size
-_getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/available regular files right under $3 dir
-                 #@              sorted by mtime, storing each file in an element, while size is stored in global. $1 is
-                 #@              used as array's basename.
+_RGFLS=          #@ Regular files array size
+_getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of vars w/available
+                 #@              reg. files right under $3 dir sorted by mtime,
+                 #@              storing each file in an element while size is
+                 #@              stored in global. $1 is used as array's bsnme.
                  #@ USAGE: _getRgFlsArr ARRAYNAME PATH
-                 #@        DO NOT CALL DIRECTLY, use getRgFlsArr wrapper instead.
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+                 #@        DO NOT CALL DIRECTLY, use below wrapper instead.
+    # Local variables ("local" must be function's first statement)
     local fls tffo ftypelst
+    # Initialize local type and file pattern lists, and global size
+    ftypelst="$_FTYPELST" fls= _RGFLS=0
     # Create list of path patterns from global
-    ftypelst="$_FTYPELST" fls= _RGFLS=0               ## Initialize local type and file pattern lists, and global size
-    while [ X"$ftypelst" != X ]; do                   ## While local file type list is not null..
-        fls=${fls+"$fls "}"\"\$2\"/*."${ftypelst%%:*} ## For each $type append "$path/*.$type" to files pattern list
-        case $ftypelst in                             ## Remove last processed type from types list
-            *:*) ftypelst=${ftypelst#*:} ;;           ## If list contains a ':', remove all up to ':' from front
-            *) ftypelst= ;;                           ## If it doesn't assume end of list reached
+    # While local file type list is not null..
+    while [ X"$ftypelst" != X ]; do
+        # For each $type append "$path/*.$type" to files pattern list
+        fls=${fls+"$fls "}"\"\$2\"/*."${ftypelst%%:*}
+        # Remove last processed type from types list
+        case $ftypelst in
+            # If list contains a ':', remove all up to ':' from front
+            *:*) ftypelst=${ftypelst#*:} ;;
+            # If it doesn't assume end of list reached
+            *) ftypelst= ;;
         esac
     done
     # Create the temporary fifo
-    if ! mkTFfo tffo; then                            ## Try to create a temporary fifo
-        errmsg "Unable to create a temporary pipe"    ## Or fail accordingly
+    if ! mkTFfo tffo; then                         ## Try to create a temp. fifo
+        errmsg "Unable to create a temporary pipe" ## Or fail accordingly
         return 1
     fi
-    # Expand list of path patterns before sorting by mtime w/ls, discarding any ls error messages
-    # We won't care if ls fails due limited access, or non-existing regular files, just allow to list what it's able to
-    eval "ls -td1 -- $fls" >$tffo 2>/dev/null & ## Sort list paths by mtime and send it to pipe
-    { while IFS= read -r _RPLY; do              ## Read from pipe line by line each path
+    # Expand list of path patterns before sorting by mtime w/ls, discarding any
+    # ls error messages. We won't care if ls fails due limited access, or non-
+    # existing regular files, just allow to list what it's able to
+    eval "ls -td1 -- $fls" >$tffo 2>/dev/null & ## Sort by mtime and send t/pipe
+    # Read from pipe line by line each path
+    { while IFS= read -r _RPLY; do
           if [ -f "$_RPLY" ]; then
-              setvar $1_$_RGFLS "${_RPLY##*/}"  ## Create array element w/it's file name part
-              _RGFLS=$((_RGFLS + 1))            ## Increase global size
+              # Create array elmnt w/current file basename
+              setvar $1_$_RGFLS "${_RPLY##*/}" 
+              # Increase global size
+              _RGFLS=$((_RGFLS + 1))
           fi
-      done <$tffo; } 2>/dev/null                ## Loop prints error message to STDERR when failed to read from pipe
-    if [ $? -gt 1 ]; then                       ## $?=1 when EOF is reached, $?>1 when unable to open fifo
-        errmsg "Failed to read from named pipe" ## Print error message to STDERR when failed to read from pipe
-        rm -f $tffo                             ## Clean up before finishing
-        return 2                                ## And finish w/errors
+      # Loop prints error message to STDERR when failed to read from pipe
+      done <$tffo; } 2>/dev/null
+    # $?=1 when EOF is reached, $?>1 when unable to open fifo
+    if [ $? -gt 1 ]; then
+        # Print error message to STDERR when failed to read from pipe
+        errmsg "Failed to read from named pipe"
+        rm -f $tffo ## Clean up before finishing
+        return 2    ## And finish w/errors
     fi
-    wait $!                                     ## Wait until backgrounded finishes
-    rm -f $tffo                                 ## Clean up before finishing
+    wait $!         ## Wait until backgrounded finishes
+    rm -f $tffo     ## Clean up before finishing
 }
-getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of variables w/reg. files right under $3 directory, using $2
-                #@              as array's basename, storing each path in arn array elment. Array size is stored in $1 referenced
-                #@              name. This is the wrapper to call when _getRgFlsArr() is needed.
+getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of vars w/reg. files
+                #@              right under $3 dir, using $2 as array's bsenme,
+                #@              storing each path in an array elmnt. Array size
+                #@              is stored in $1 referenced name, making it the
+                #@              wrapper to call when _getRgFlsArr() is needed.
                 #@ USAGE: getRgFlsArr SIZE ARRAYNAME PATH
-    _getRgFlsArr ${2+"$2"} ${3+"$3"} || return $? ## call _getRgFlsArr() or finish preserving its exit status
-    setvar $1 $_RGFLS                             ## Store global reg. files array size into $1 referenced name
+    # call _getRgFlsArr() or finish preserving its exit status
+    _getRgFlsArr ${2+"$2"} ${3+"$3"} || return
+    # Store global reg. files array size into $1 referenced name
+    setvar $1 $_RGFLS
 }
-unstArr() { #@ DESCRIPTION: Unset an entire array-like list of variables given its basename and size
+unstArr() { #@ DESCRIPTION: Unset an entire array-like list of variables given
+            #@              its basename and size
             #@ USAGE unsetArr SIZE ARRAYBASENAME
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+    # Local variables ("local" must be function's first statement)
     local i
     i=0                     ## Initialize array index
     while [ $i -le $1 ]; do ## While previous index wasn't the last one
@@ -175,127 +243,146 @@ unstArr() { #@ DESCRIPTION: Unset an entire array-like list of variables given i
         i=$((i + 1))        ## Increase index
     done
 }
-_TROWS= _TCOLS= ## Current terminal's dimensions
-_getTrmSze() { #@ DESCRIPTION: Gets current terminal size in rows and columns, storing its values in above globals.
+_TROWS=        #@ Current terminal's dimensions: rows
+_TCOLS=        #@ and columns
+_getTrmSze() { #@ DESCRIPTION: Gets current terminal size in rows and columns,
+               #@              storing its values in above globals.
                #@ USAGE: _getTrmSze
                #@        DO NOT CALL DIRECTLY, use getTrmSze() wrapper instead.
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+    # Local variables ("local" must be function's first statement)
     local tffo
-    if ! mkTFfo tffo; then                         ## Try to create a temporary fifo
+    if ! mkTFfo tffo; then                         ## Try to create a temp. fifo
         errmsg "Unable to create a temporary pipe" ## Or fail accordingly
         return 1
     fi
-    stty -a >$tffo 2>/dev/null &                   ## Get all current [pseudo]tty information to pipe
-    { while IFS= read -r _RPLY; do                 ## Read information line by line
-          case $_RPLY in                           ## Filter per line
-              *rows*columns*)                      ## If current line contains info about rows and columns
-                  _TROWS=${_RPLY#*"rows "}         ## * Extract current rows number to global
-                  _TROWS=${_TROWS%%[!0-9]*}        ##
-                  _TCOLS=${_RPLY#*"columns "}      ## * Extract current columns number to global
-                  _TCOLS=${_TCOLS%%[!0-9]*}        ##
-                  break ;;                         ## * Stop reading lines, we got all needed info
+    # Get all current [pseudo]tty information to pipe
+    stty -a >$tffo 2>/dev/null &
+    # Read information line by line
+    { while IFS= read -r _RPLY; do
+          case $_RPLY in                      ## Filter per line
+              *rows*columns*)                 ## If curr. line has rows and cols
+                  _TROWS=${_RPLY#*"rows "}    ## * Extract rows number to global
+                  _TROWS=${_TROWS%%[!0-9]*}   ##
+                  _TCOLS=${_RPLY#*"columns "} ## * Extract cols number to global
+                  _TCOLS=${_TCOLS%%[!0-9]*}   ##
+                  break ;;                    ## * Stop reading, we got it all
           esac
-      done <$tffo; } 2>/dev/null                   ## IO redir for loop to read from pipe and silence shell errors
-    if [ $? -gt 1 ]; then                          ## $?=1 when EOF is reached, $?>1 when unable to open fifo
-        errmsg "Failed to read from named pipe"    ## Print error message to STDERR when failed to read from pipe
-        rm -f $tffo                                ## Clean up
-        return 2                                   ## And finish w/errors
-    elif ! wait $!; then                           ## Check exit status from previously backgrounded (job control)
-        errmsg "Failed to get terminal size"       ## Print error message if backgrounded finished w/errors
-        rm -f $tffo                                ## Clean up
-        return 3                                   ## And finish w/errors. We cannot trust what we read from pipe
+      # IO redir for loop to read from pipe and silence shell errors
+      done <$tffo; } 2>/dev/null
+    # $?=1 when EOF is reached, $?>1 when unable to open fifo
+    if [ $? -gt 1 ]; then
+        # Print error message to STDERR when failed to read from pipe
+        errmsg "Failed to read from named pipe"
+        rm -f $tffo ## Clean up
+        return 2    ## And finish w/errors
+    # Check exit status from previously backgrounded (job control)
+    elif ! wait $!; then
+        # Print error message if backgrounded finished w/errors
+        errmsg "Failed to get terminal size"
+        rm -f $tffo ## Clean up
+        return 3    ## And finish w/errors. We can't trust what we got from pipe
     fi
-    rm -f $tffo                                    ## Clean finish
+    rm -f $tffo     ## Clean finish
 }
-getTrmSze() { #@ DESCRIPTION: Gets current terminal size in rows and columns using _getTrmSze(), storing them in $1 and
-              #@              $2 names respectively.
+getTrmSze() { #@ DESCRIPTION: Gets curr. term. size in rows and columns using
+              #@              _getTrmSze(), storing them in $1 and $2 names resp
               #@ USAGE: getTrmSze NAME1 NAME2
-    _getTrmSze || return $? ## Call _getTrmSze or finish preserving its exit status
-    setvar $1 "$_TROWS"     ## Set referenced names w/global values
+    _getTrmSze || return  ## Call _getTrmSze or finish preserving exit status
+    setvar $1 "$_TROWS"   ## Set referenced names w/global values
     setvar $2 "$_TCOLS"
 }
-_MSLCTD= ## Option menu selected option value
-_menu() { #@ DESCRIPTION: Displays a whiptail option menu using an array-like list of variables. Each array element
-          #@              becomes a menu option and each index the corresponding option value. $1 is used as the menu
-          #@              title, $2 as a suggestion text, $3 as the array basename $4 as the array length. After user
-          #@              chooses an option, its value is written to above's global variable.
-          #@ USAGE: _menu TITLE SUGGESTION ARRAYBASENAME ARRAYSIZE [ OK_BUTTON_TEXT [ CANCEL_BUTTON_TEXT ] ]
-          #@        DO NOT CALL DIRECTLY, use menu() wrapper instead.
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+_MSLCTD=  #@ Option menu selected option value
+_menu() { #@ DESCRIPTION: Displays a whiptail option menu using an array-like
+          #@              list of vars. Each array element becomes a menu option
+          #@              and each index the corresponding option value. $1 is
+          #@              used as the menu title, $2 as a suggestion text, $3 as
+          #@              the arr bsnme $4 as the array length. After usr choos-
+          #@              es an option, its value is written to above's global.
+          #@ USAGE: _menu TITLE SUG ABSNME SIZE [ OK_TXT [ CANCEL_TXT ] ]
+          #@        DO NOT CALL DIRECTLY, use menu() wrapper instead.    
+    # Local variables ("local" must be function's first statement)
     local rws cls i tgitms itm
-    rws=0 cls=0                              ## Initialize rows and columns values
-    if ! getTrmSze rws cls; then             ## Get current terminal size in above variables
+    rws=0 cls=0                              ## Initialize rows and cols values
+    if ! getTrmSze rws cls; then             ## Get current term rows and cols
         errmsg "Unable to get terminal size" ## Or finish w/errors
         return 1
     fi
-    i=0 tgitms=                              ## Initialize index and the taged list of items string
-    while [ $i -lt $4 ]; do                  ## Turn each array index into a menu tag followed by its matchig element's
-        getvar itm $3_$i                     ## double-quoted value, accumulating both into items string.
+    i=0 tgitms=             ## Init. index and the taged list of items string
+    while [ $i -lt $4 ]; do ## Turn index into a menu tag followed by matchig 
+        getvar itm $3_$i    ## element's double-quoted value & accumulating them
         tgitms=${tgitms:+"$tgitms "}"$i \"$itm\""
         i=$((i + 1))
-    done                                     ## Now display the menu, and await for user's selection
+    done                    ## Display the menu, and await for user's selection
     _MSLCTD=$(eval "whiptail --fb --notags --title \"$1\" --menu \"$2\"\
-                             --ok-button \"${5:-OK}\" --cancel-button \"${6:-Cancel}\" --\
-                             $((rws < 3 ? rws : rws - 3)) $((cls < 30 ? cls : cls - 30))\
-                             $((rws < 15 ? rws : rws - 15)) $tgitms x \"${6:-Cancel}\" 3>&1 >&2 2>&3")
-    case $? in                               ## If an option is selected, then whiptail's exit status is 0. Else if
-        0|1)                                 ## Cancel button is selected it will return 1.
-            return $? ;;                     ##
-        *)                                   ## In any other case, assume that something wen wrong w/whiptails's exec.
+                             --ok-button \"${5:-OK}\"\
+                             --cancel-button \"${6:-Cancel}\" --\
+                             $((rws < 3 ? rws : rws - 3))\
+                             $((cls < 30 ? cls : cls - 30))\
+                             $((rws < 15 ? rws : rws - 15))\
+                             $tgitms x \"${6:-Cancel}\" 3>&1 >&2 2>&3")
+    case $? in             ## If an option is selected, then whiptail's esit
+        0) return 0 ;;     ## status is 0. Else if cancel button is selected
+        1) return 1 ;;     ## It will return 1. In any other case, assume that
+        *)                 ## something wen wrong w/whiptails's execution.
             errmsg "Menu failed"
             return 2 ;;
     esac
 }
-menu() { #@ DESCRIPTION: This is the wrapper for _menu(), that you generally want to use. In addition to wrapped's
-         #@              functionality, it stores the selected item's value in referenced name.
-         #@ USAGE: menu NAME TITLE SUGGESTION ARRAYNAME ARRAYSIZE [ OK_BUTTON_TEXT [ CANCEL_BUTTON_TEXT ] ]
-    _menu ${2+"$2"} ${3+"$3"} ${4+"$4"} ${5+"$5"} ${6+"$6"} ${7+"$7"} || return $?
+menu() { #@ DESCRIPTION: This is the wrapper for _menu(), that you usually want
+         #@              to use. In addition to wrapped's functionality, it sto-
+         #@              res the selected item's value in referenced name.
+         #@ USAGE: menu NAME TITLE SUG ANAME ASIZE [ OK_TXT [ CANCEL_TXT ] ]
+    _menu ${2+"$2"} ${3+"$3"} ${4+"$4"} ${5+"$5"} ${6+"$6"} ${7+"$7"} || return
     setvar $1 "$_MSLCTD"
 }
 _RSLCTD=
-_radio() { #@ DESCRIPTION: Displays a whiptail radio list that allows user to select between actions to take upon the
-           #@               $1 path specified file.
+_radio() { #@ DESCRIPTION: Displays a whiptail radio list allowing user to se-
+           #@              lect between actions to take upon $1 filename.
            #@ USAGE: _radio PATH
            #@        DO NOT CALL DIRECTLY, use radio() wrapper instead.
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+    # Local variables ("local" must be function's first statement)
     local rws cls
-    rws=0 cls=0                              ## Initialize rows and columns values
-    if ! getTrmSze rws cls; then             ## Get current terminal size in above variables
+    rws=0 cls=0                              ## Initialize rows and cols.
+    if ! getTrmSze rws cls; then             ## Get curr. term. cols and rows
         errmsg "Unable to get terminal size" ## Or finish w/errors
         return 1
-    fi                                       ## Now display the radio list awaiting for user to choose
-    _RSLCTD=$(whiptail --fb --notags --title "Action select" --radiolist "Select action for $1:"\
+    fi
+    # Display the radio list awaiting for user to choose
+    _RSLCTD=$(whiptail --fb --notags --title "Action select"\
+                       --radiolist "Select action for $1:"\
                        --ok-button OK --cancel-button Back --\
-                       $((rws < 20 ? rws : 20)) $((cls < 60 ? cls : 60)) $((rws < 4 ? rws : 4))\
+                       $((rws < 20 ? rws : 20)) $((cls < 60 ? cls : 60))\
+                       $((rws < 4 ? rws : 4))\
                        1 "View   - less secure " on\
                        2 "Follow - tail -F (rotation aware) " off\
                        3 "Cancel - Go back " off 3>&1 >&2 2>&3)
-    case $? in                               ## If an option is selected, then whiptail's exit status is 0. Else if
-        0|1)                                 ## Cancel button is selected it will return 1.
-            return $? ;;                     ##
-        *)                                   ## In any other case, assume that something wen wrong w/whiptails's exec.
+    case $? in             ## If an option is selected, then whiptail's esit
+        0) return 0 ;;     ## status is 0. Else if cancel button is selected
+        1) return 1 ;;     ## It will return 1. In any other case, assume that
+        *)                 ## something wen wrong w/whiptails's execution.
             errmsg "Radio failed"
             return 2 ;;
     esac
 }
-radio() { #@ DESCRIPTION: This is the wrapper for _radio() that you generally want to use. In addition it stores the
-          #@              selected item value in $1 referenced name.
+radio() { #@ DESCRIPTION: Wrapper for _radio() for general use. In addition it
+          #@              stores the selected item value in $1 referenced name.
           #@ USAGE: radio NAME PATH
-    _radio ${2+"$2"} || return $?
+    _radio ${2+"$2"} || return
     setvar $1 "$_RSLCTD"
 }
-istxtf() { #@ DESCRIPTION: Tests if $1 path is that of a plain/text file using "file" command. If it is, exit status
-           #@ will be 0, otherwise it will be 1. A greater exit status indicates that file itself failed.
+istxtf() { #@ DESCRIPTION: Tests if $1 path is that of a plain/text file using
+           #@              "file" command. If it is, exit status will be 0, else
+           #@               it will be 1. Greater stat indicates "file" failed.
            #@ USAGE: istxtf PATH
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+    # Local variables ("local" must be function's first statement)
     local fout
-    fout=$(file -i "$1") || return 1               ## Get mime type string or fail
-    case $fout in                                  ## Test retreived mime type string
-        *inode/x-empty*)                           ## If this is an empty file fail w/specific exit status
-            errmsg "$1 is empty."                  ##
-            return 2 ;;                            ##
-        *text/plain*) return 0 ;;                  ## Else if this is a text file succeed..
-        *)                                         ## Fail in any other case w/generic status
+    fout=$(file -i "$1") || return 1 ## Get mime type string or fail
+    case $fout in                    ## Test retreived mime type string
+        *inode/x-empty*)             ## If this is an empty file fail w/specific
+            errmsg "$1 is empty."    ## exit status
+            return 2 ;;              ##
+        *text/plain*) return 0 ;;    ## Else if this is a text file succeed..
+        *)                           ## Fail in any other case w/generic status
             errmsg "$1 is not a plain text file."
             return 3 ;;
     esac
@@ -304,109 +391,136 @@ viewlog() { #@ DESCRIPTION: Allows user to safely browse $1 text file content.
             #@ USAGE: viewlog PATH
     LESSSECURE=1 less "$1" ## Try to issue less in secure mode
 }
-fllwlog() { #@ DESCRIPTION: Allows user to follow (monitor) on $1 updates. It is also aware of file rotations. This
-            #@              makes it usefull when following for long periods.
+fllwlog() { #@ DESCRIPTION: Allows user to follow (monitor) on $1 updates. It is
+            #@              also aware of file rotations. This makes it useful
+            #@              when following for long periods.
             #@ USAGE: fllwlog PATH
-    tail -F "$1"               ## Use tail's -F flag to report file rotations to STDOUT
-    [ $? -eq 130 ] && return 0 ## Tail seems to exit w/130 when Ctrl+C is issued by user (SIGTERM), hence normal exit
+    tail -F "$1"               ## Use -F flag to report file rotations to STDOUT
+    [ $? -eq 130 ] && return 0 ## Tail seems to exit w/130 when Ctrl+C is issued
+                               ## by user (SIGTERM), hence normal exit
     return 1                   ## Assume failure in any other case
 }
 ##
-## -- Main -------------------------------------------------------------------------------------------------------------
+## -- Main ---------------------------------------------------------------------
 main() {
-    ## Local variables (If local is used, it should appear as the first statement of a function)
+    # Local variables ("local" must be function's first statement)
     local ldarr lds s_ld s_ldp lfarr lfs s_lf s_lfp s_rd
-    set -m -- ## Force job control ON and discard any positional parameters
+    set -m                                             ## Force job control ON
     # Check for an interactive shell
-    if [ ! -t 0 ]; then                      ## If current STDIN does NOT point to a terminal
-        errmsg "Interactive shell required"  ## Finish w/errors
+    if [ ! -t 0 ]; then                     ## Curr. STDIN NOT point to term?
+        errmsg "Interactive shell required" ## Finish w/errors
         sleep 3
         return 1
     fi
     # Fetch log-directories-to-select array
-    if ! getLgDrsArr lds ldarr; then                     ## Try to get array size in lds using ldarr as array base name
-        stdmsg "Unable to retrieve log directory list"   ## When fail to do so, Display an error message
-        sleep 3                                          ##                     Allow some time to read the message
-        return 2                                         ##                     finish execution w/errors
+    # Try to get array size in lds using ldarr as array base name
+    if ! getLgDrsArr lds ldarr; then                   ## Fail to do so?
+        stdmsg "Unable to retrieve log directory list" ## Display error message
+        sleep 3                                        ## Allow some time
+        return 2                                       ## Finish w/errors
     fi
     # Script's main loop, keep prompting user to select a directory
     while :; do
         # Request user to select a directory from log directories array
         menu s_ld "Directory selection" "Select a log directory:" \
-                  ldarr $lds OK Exit                     ## Display a menu using array elements as options
-        case $? in                                       ## Storing selected value in s_ld
-            1) return 0 ;;                               ## Finish execution on "Cancel"
-            2)                                           ## Also Finish execution w/errors when menu fails
+             ldarr $lds OK Exit ## Display menu using array elements as options
+        case $? in              ## Storing selected value in s_ld
+            1) return 0 ;;      ## Finish execution on "Cancel"
+            2)                  ## Also Finish exec. w/errors when menu fails
                 stdmsg "Unable to get answer from user"
                 sleep 3
                 return 3 ;;
         esac
         # Take actions according to user selected directory
         case $s_ld in
-            [Xx]) return 0 ;;                                    ## If user selected "X" option, finish execution
-            *)                                                   ## Else..
-                getvar s_ldp ldarr_$s_ld                         ## Get selected array index value path in s_ldp
-                if ! getRgFlsArr lfs lfarr "$s_ldp"; then        ## Try Fetch array of files in selected dir path
-                    stdmsg "Unable to retrieve $s_ldp file list" ## If fail to do so, display error and finish exec.
+                # If user selected "X" option, finish execution
+            [Xx]) return 0 ;;                                    
+            *)  # Else..
+                # Get selected array index value path in s_ldp
+                getvar s_ldp ldarr_$s_ld
+                # Try Fetch array of files in selected dir path
+                if ! getRgFlsArr lfs lfarr "$s_ldp"; then
+                    # If fail to do so, display error and finish exec.
+                    stdmsg "Unable to retrieve $s_ldp file list"
                     sleep 3
                     return 4
-                elif [ $lfs -eq 0 ]; then                        ## Check if there are any files available
-                    stdmsg "No files available under $s_ldp"     ## If there aren't, let the user know in a message
-                    sleep 3                                      ## Allow user to read message
-                    continue                                     ## Go back to directory selection menu
+                # Check if there are any files available
+                elif [ $lfs -eq 0 ]; then
+                    # If there aren't, let the user know in a message
+                    stdmsg "No files available under $s_ldp"
+                    sleep 3  ## Allow user to read message
+                    continue ## Go back to directory selection menu
                 fi
-                # Keep prompting user to select a log file from selected directory
+                # Keep prompting user to select log file from selected directory
                 while :; do
                     # Request user to select a log file to read
+                    # Display menu using log files array as options storing se-
+                    # lected value in s_lf
                     menu s_lf "Logfile selection" "Select a log file:" \
-                              lfarr $lfs OK Back                ## Display menu using log files array as options
-                    case $? in                                  ## Sorting selected value in s_lf
-                        1)                                      ## Finish current loop on "Cancel" but make sure to
-                            unstArr $lfs lfarr                  ## destroy log files array before next iteration.
+                              lfarr $lfs OK Back
+                    case $? in
+                        1)  # Finish current loop on "Cancel" but make sure to
+                            # destroy log files array before next iteration.
+                            unstArr $lfs lfarr 
                             break ;;
-                        2)                                      ## Finish execution w/errors when menu fails
+                        2)  # Finish execution w/errors when menu fails
                             stdmsg "Unable to get answer from user"
                             sleep 3
                             return 5 ;;
                     esac
-                    # TAke actions according to user selected log file
+                    # Take actions according to user selected log file
                     case $s_lf in
-                        [Xx])                                  ## If user selected "X" option, finish current loop
-                            unstArr $lfs lfarr                 ## Making sure to destroy current log files array
+                           # If user selected "X" option, finish current loop
+                           # making sure to destroy current log files array
+                        [Xx])                        
+                            unstArr $lfs lfarr
                             break ;;
-                        *)                                     ## Else..
-                            getvar s_lfp lfarr_$s_lf           ## get selected array index value name in s_lfp
-                            if ! istxtf "$s_ldp/$s_lfp"; then  ## Pre-append container's path and test if text file
+                        *) # Else..
+                           # Get selected array index value name in s_lfp
+                            getvar s_lfp lfarr_$s_lf
+                            # Pre-append container's path and test if text file
+                            if ! istxtf "$s_ldp/$s_lfp"; then
                                 stdmsg "Could not select specified file"
-                                sleep 3                        ## Allow user to read why won't display non-text file
-                            else                               ## If this is a text file..
-                                radio s_rd "$s_lfp"            ## Allow user to choose what to do w/radio item list
-                                case $? in                     ## Storing selected item value in s_rd
-                                    1) continue ;;             ## Go to previous menu on "Back"
-                                    2)                         ## Finish execution on any other exit status (error)
+                                sleep 3             ## Allow usr to read
+                            else                    ## If this is a text file..
+                                # Allow user choose what to do w/radio item list
+                                # Storing selected item value in s_rd
+                                radio s_rd "$s_lfp"
+                                case $? in
+                                    # Go to previous menu on "Back"
+                                    1) continue ;;
+                                    # Finish execution on any other exit status
+                                    2)
                                         stdmsg "Unable to get answer from user"
                                         sleep 3
                                         return 6 ;;
                                 esac
                                 # Take action according to user selected action
                                 case $s_rd in
-                                    1)                                     ## If user selected 1 (view w/less secure)
-                                        if ! viewlog "$s_ldp/$s_lfp"; then ## Try to use viewlog to page files's content
-                                            stdmsg "Unable to view $s_lfp" ## If above operation fails, display error
-                                            sleep 3                        ## Allow user to read above error
-                                        fi ;;                              ## Go back to file selection menu
-                                    2)                                       ## If user selected 2 (Follow file)
-                                        if ! fllwlog "$s_ldp/$s_lfp"; then   ## Try to use fllwlog to follow updates
-                                            stdmsg "Unable to follow $s_lfp" ## Or fail going back to file selection
+                                    1)  # If user slctd 1 (view w/less secure)
+                                        # Use viewlog to page files's content
+                                        if ! viewlog "$s_ldp/$s_lfp"; then
+                                            # Above operation fails? disply err.
+                                            stdmsg "Unable to view $s_lfp"
+                                            sleep 3 ## Allow user to read error
+                                        fi ;;       ## Back to file selec. menu
+                                    2)
+                                        # If user selected 2 (Follow file)
+                                        # Try to use fllwlog to follow updates
+                                        if ! fllwlog "$s_ldp/$s_lfp"; then
+                                            # Or fail ging back to fle selection
+                                            stdmsg "Unable to follow $s_lfp"
                                             sleep 3
-                                        fi ;;                              ## Go back to file selection menu in any
-                                esac                                       ## other case
+                                        fi ;; ## Go back to file selection menu
+                                esac          ## in any other case
                             fi ;;
                     esac
                 done ;;
         esac
     done
 }
+## Aliases no longer needed
+unalias file less ls mkfifo rm sleep stty tail whiptail
 ##
-## -- Run! -------------------------------------------------------------------------------------------------------------
-main "$@"
+## -- Run! ---------------------------------------------------------------------
+main
