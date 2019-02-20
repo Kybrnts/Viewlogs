@@ -119,7 +119,6 @@ _mkTFfo() { #@ DESCRIPTION: Creates single temp fifo in /tmp for each invocation
         _TMPFFID=$((_TMPFFID < 999 ? _TMPFFID + 1 : 0)) ## Increase global ID
         tffp=/tmp/${0##*/}.$$.$_TMPFFID.tmp             ## Change path
     done                                            ## Fifo created!
-    stdmsg "Done."                                  ## Display that
     _TMPFFID=$((_TMPFFID < 999 ? _TMPFFID + 1 : 0)) ## Increase ID (now used)
     setvar $1 "$tffp"                               ## Write path to output name
 }
@@ -193,7 +192,7 @@ _getRgFlsArr() { #@ DESCRIPTION: Creates an array-like list of vars w/available
         esac
     done
     # Create the temporary fifo
-    if ! mkTFfo tffo; then                         ## Try to create a temp. fifo
+    if ! mkTFfo tffo; then              ## Try to create a temp. fifo
         errmsg "Unable to create a temporary pipe" ## Or fail accordingly
         return 1
     fi
